@@ -1,0 +1,53 @@
+# Byte-compiled / optimized / cached
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+
+# Training artifacts (never commit — these belong on Drive / local disk)
+artifacts/
+checkpoints/
+outputs/
+logs/
+runs/
+predictions/
+*.ckpt
+*.pt
+*.safetensors
+
+# Hugging Face / dataset caches
+.cache/
+hf_cache/
+data_cache/
+datasets_cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/

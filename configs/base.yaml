@@ -1,0 +1,47 @@
+# Fuller run config. Scale up subset sizes / epochs / batch size on a GPU.
+#
+# To distill: set model.teacher_name_or_path to a (preferably en-de fine-tuned)
+# flan-t5-base and set distillation.kd_weight > 0.
+
+run_name: base
+
+model:
+  student_name_or_path: t5-small
+  teacher_name_or_path: null   # e.g. google/flan-t5-base once fine-tuned on en-de
+  prefix: "translate English to German: "
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: ["q", "v", "k", "o"]
+
+data:
+  dataset_name: opus100
+  config_name: de-en
+  source_lang: en
+  target_lang: de
+  max_source_length: 128
+  max_target_length: 128
+  train_subset: null     # use the full train split
+  eval_subset: 2000
+  num_workers: 4
+
+training:
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  batch_size: 32
+  eval_batch_size: 32
+  num_epochs: 5
+  warmup_ratio: 0.05
+  label_smoothing: 0.1
+  max_grad_norm: 1.0
+  seed: 42
+  mixed_precision: "fp16"
+  log_every: 50
+  gradient_accumulation_steps: 1
+
+distillation:
+  kd_weight: 0.0
+  temperature: 2.0
+  kd_mode: word

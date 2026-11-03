@@ -1,0 +1,51 @@
+# Tiny config for fast local (CPU) and Colab smoke tests.
+#
+# NOTE on teacher quality (en-de): t5-small / flan-t5-base are English-centric
+# and are NOT strong en-de translators out of the box. Distillation quality is
+# bounded by teacher quality, so here SFT is the primary quality driver and KD
+# is wired up + validated as a mechanism. For real gains, fine-tune the teacher
+# on en-de first. Keep teacher_name_or_path null for pure SFT runs.
+
+run_name: tiny
+
+model:
+  student_name_or_path: t5-small
+  # Set to flan-t5-base to enable distillation (also set distillation.kd_weight > 0).
+  teacher_name_or_path: null
+  prefix: "translate English to German: "
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: ["q", "v"]
+
+data:
+  dataset_name: opus100
+  config_name: de-en
+  source_lang: en
+  target_lang: de
+  max_source_length: 64
+  max_target_length: 64
+  train_subset: 200     # tiny subset for quick iteration
+  eval_subset: 50
+  num_workers: 2
+
+training:
+  learning_rate: 3.0e-4
+  weight_decay: 0.0
+  batch_size: 8
+  eval_batch_size: 8
+  num_epochs: 2
+  warmup_ratio: 0.05
+  label_smoothing: 0.1
+  max_grad_norm: 1.0
+  seed: 42
+  mixed_precision: "no"   # set to fp16/bf16 on a Colab GPU
+  log_every: 5
+  gradient_accumulation_steps: 1
+
+distillation:
+  kd_weight: 0.0          # 0.0 => pure SFT; set > 0 with a teacher to distill
+  temperature: 2.0
+  kd_mode: word           # "word" implemented in Part 1; "sequence" is a stub
