@@ -6,6 +6,11 @@ datasets>=2.20.0
 accelerate>=0.33.0
 sentencepiece>=0.2.0
 
+# NOTE (Colab): newer peft eagerly imports torchao and requires >0.16.0. Colab
+# preinstalls an older torchao (e.g. 0.10.0), which makes peft raise on import.
+# We do not use torchao, so setup_colab() removes the stale copy. See
+# utils/colab_utils.py::_fix_colab_env.
+
 # Evaluation
 sacrebleu>=2.4.0
 evaluate>=0.4.2

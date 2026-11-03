@@ -144,6 +144,27 @@ def _pip_install(requirements_file: str | Path) -> None:
     )
 
 
+def _fix_colab_env() -> None:
+    """Work around Colab-preinstalled package clashes before importing peft.
+
+    Colab ships an older ``torchao`` (e.g. 0.10.0). Newer ``peft`` eagerly
+    imports torchao and requires ``> 0.16.0``, so ``import peft`` raises an
+    ``ImportError`` before any of our code runs. We do not use torchao, so the
+    simplest robust fix is to uninstall the stale copy. Best effort: failures
+    here are non-fatal and printed, not raised.
+    """
+    try:
+        import torchao  # type: ignore  # noqa: F401
+    except Exception:
+        return  # torchao not present -> nothing to fix.
+
+    print("[colab] Removing Colab's preinstalled torchao (unused, clashes with peft).")
+    subprocess.run(
+        [sys.executable, "-m", "pip", "uninstall", "-q", "-y", "torchao"],
+        check=False,
+    )
+
+
 def setup_colab(
     run_name: str = "default",
     requirements_file: str | Path = "requirements.txt",
@@ -165,6 +186,7 @@ def setup_colab(
     if is_colab():
         if install:
             _pip_install(requirements_file)
+            _fix_colab_env()
         mount_drive()
     else:
         print("[colab] Not running on Colab; using local artifact paths.")

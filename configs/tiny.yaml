@@ -21,7 +21,7 @@ lora:
   target_modules: ["q", "v"]
 
 data:
-  dataset_name: opus100
+  dataset_name: Helsinki-NLP/opus-100
   config_name: de-en
   source_lang: en
   target_lang: de

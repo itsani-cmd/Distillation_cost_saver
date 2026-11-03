@@ -63,10 +63,10 @@ class DataConfig:
     """Dataset selection and tokenization limits.
 
     Attributes:
-        dataset_name: HF dataset name (``opus100`` by default).
+        dataset_name: HF dataset name (``Helsinki-NLP/opus-100`` by default).
         source_lang: Source language code.
         target_lang: Target language code.
-        config_name: Dataset config; for opus100 this is ``de-en``.
+        config_name: Dataset config; for opus-100 this is ``de-en``.
         max_source_length: Max source tokens.
         max_target_length: Max target tokens.
         train_subset: If set, cap the train split to this many examples.
@@ -74,7 +74,7 @@ class DataConfig:
         num_workers: Dataloader workers.
     """
 
-    dataset_name: str = "opus100"
+    dataset_name: str = "Helsinki-NLP/opus-100"
     source_lang: str = "en"
     target_lang: str = "de"
     config_name: str = "de-en"

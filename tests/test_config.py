@@ -18,7 +18,7 @@ def test_load_tiny_yaml_fields():
     assert cfg.model.student_name_or_path == "t5-small"
     assert cfg.model.teacher_name_or_path is None
     assert cfg.lora.target_modules == ["q", "v"]
-    assert cfg.data.dataset_name == "opus100"
+    assert cfg.data.dataset_name == "Helsinki-NLP/opus-100"
     assert cfg.data.source_lang == "en"
     assert cfg.data.target_lang == "de"
     assert cfg.training.num_epochs == 2
