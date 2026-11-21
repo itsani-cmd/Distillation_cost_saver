@@ -1,7 +1,7 @@
 """Configuration dataclasses and a validated YAML loader.
 
 The config is the single contract every other module reads from. It is split
-into logical sections (model, lora, data, training, distillation) so that
+into logical sections (model, lora, data, training, distillation, early_exit) so that
 contributors working on different modules only need the section they care about.
 
 Example:
@@ -136,6 +136,52 @@ class DistillationConfig:
 
 
 @dataclass
+class EarlyExitConfig:
+    """Early-exit (CALM-style) settings. Off by default.
+
+    Training side (used in Part 3 / Milestone 1): when ``enabled``, every
+    decoder layer's hidden state is turned into word predictions through the
+    shared output head and graded, so the early layers learn to guess.
+
+    The per-layer loss is::
+
+        loss = sum_i w_i * (combined_loss(layer_i) + self_distill_weight * SD_i)
+
+    where ``w_i`` comes from ``layer_weighting`` and ``SD_i`` is a KL term that
+    pulls layer ``i``'s predictions toward the (detached) final layer's.
+
+    Attributes:
+        enabled: Turn on the multi-exit training loss.
+        layer_weighting: ``"linear"`` (``w_i = i / sum(1..L)``, later layers
+            count more, as in the CALM paper) or ``"uniform"``.
+        self_distill_weight: Weight of the self-distillation term. ``0`` is
+            plain SFT on every layer (Option A); ``> 0`` is Option B.
+        self_distill_temperature: Softmax temperature for the self-distillation KL.
+        train_final_norm: Also train the decoder's final layer norm (shared by
+            all exits). Fallback if LoRA alone leaves early layers weak.
+        measure: Confidence measure used at translation time (Part 2).
+        threshold: Exit threshold in ``[0, 1]`` used at translation time.
+        static_layer: Layer to always exit at when ``measure == "static"``.
+        decay_tau: Temperature of the decaying threshold (``0`` = constant).
+    """
+
+    enabled: bool = False
+    layer_weighting: str = "linear"
+    self_distill_weight: float = 0.0
+    self_distill_temperature: float = 1.0
+    train_final_norm: bool = False
+    measure: str = "softmax"
+    threshold: float = 0.9
+    static_layer: int = 3
+    decay_tau: float = 0.0
+
+
+# Allowed values for the early-exit section.
+LAYER_WEIGHTINGS = ("linear", "uniform")
+EXIT_MEASURES = ("static", "softmax", "saturation", "classifier", "oracle")
+
+
+@dataclass
 class Config:
     """Top-level config aggregating all sections.
 
@@ -146,6 +192,7 @@ class Config:
         data: :class:`DataConfig`.
         training: :class:`TrainingConfig`.
         distillation: :class:`DistillationConfig`.
+        early_exit: :class:`EarlyExitConfig`.
     """
 
     run_name: str = "tiny"
@@ -154,6 +201,7 @@ class Config:
     data: DataConfig = field(default_factory=DataConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     distillation: DistillationConfig = field(default_factory=DistillationConfig)
+    early_exit: EarlyExitConfig = field(default_factory=EarlyExitConfig)
 
     @property
     def distillation_enabled(self) -> bool:
@@ -231,6 +279,34 @@ def _validate(cfg: Config) -> None:
             "distillation.kd_weight > 0 requires model.teacher_name_or_path to be set."
         )
 
+    ee = cfg.early_exit
+    if ee.layer_weighting not in LAYER_WEIGHTINGS:
+        raise ValueError(
+            f"early_exit.layer_weighting must be one of {LAYER_WEIGHTINGS}, "
+            f"got {ee.layer_weighting!r}"
+        )
+    if ee.self_distill_weight < 0.0:
+        raise ValueError(
+            f"early_exit.self_distill_weight must be >= 0, got {ee.self_distill_weight}"
+        )
+    if ee.self_distill_temperature <= 0.0:
+        raise ValueError(
+            "early_exit.self_distill_temperature must be > 0, " f"got {ee.self_distill_temperature}"
+        )
+    if ee.measure not in EXIT_MEASURES:
+        raise ValueError(f"early_exit.measure must be one of {EXIT_MEASURES}, got {ee.measure!r}")
+    if not 0.0 <= ee.threshold <= 1.0:
+        raise ValueError(f"early_exit.threshold must be in [0, 1], got {ee.threshold}")
+    if ee.static_layer < 1:
+        raise ValueError(f"early_exit.static_layer must be >= 1, got {ee.static_layer}")
+    if ee.decay_tau < 0.0:
+        raise ValueError(f"early_exit.decay_tau must be >= 0, got {ee.decay_tau}")
+    # Training-only options that silently do nothing when early exit is off.
+    if not ee.enabled and (ee.self_distill_weight > 0.0 or ee.train_final_norm):
+        raise ValueError(
+            "early_exit.self_distill_weight / train_final_norm require early_exit.enabled: true."
+        )
+
 
 def config_from_dict(raw: dict[str, Any]) -> Config:
     """Build and validate a :class:`Config` from a plain dict.
@@ -257,6 +333,7 @@ def config_from_dict(raw: dict[str, Any]) -> Config:
         data=_build_section(DataConfig, raw.get("data")),
         training=_build_section(TrainingConfig, raw.get("training")),
         distillation=_build_section(DistillationConfig, raw.get("distillation")),
+        early_exit=_build_section(EarlyExitConfig, raw.get("early_exit")),
     )
     _validate(cfg)
     return cfg

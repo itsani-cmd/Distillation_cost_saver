@@ -1,0 +1,57 @@
+# Early exit, Option B (SFT + self-distillation on every layer) -- TINY smoke test.
+#
+# Purpose: check the multi-exit training code runs end to end in a few minutes.
+# The numbers it produces are NOT meaningful (200 sentences). For real results
+# use configs/ee_mid_selfdistill.yaml.
+#
+# Only difference from ee_tiny_sft.yaml: early_exit.self_distill_weight.
+
+run_name: ee_tiny_selfdistill
+
+model:
+  student_name_or_path: t5-small
+  teacher_name_or_path: null
+  prefix: "translate English to German: "
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: ["q", "v"]
+
+data:
+  dataset_name: Helsinki-NLP/opus-100
+  config_name: de-en
+  source_lang: en
+  target_lang: de
+  max_source_length: 64
+  max_target_length: 64
+  train_subset: 200
+  eval_subset: 50
+  num_workers: 2
+
+training:
+  learning_rate: 3.0e-4
+  weight_decay: 0.0
+  batch_size: 8
+  eval_batch_size: 8
+  num_epochs: 2
+  warmup_ratio: 0.05
+  label_smoothing: 0.1
+  max_grad_norm: 1.0
+  seed: 42
+  mixed_precision: "no"
+  log_every: 5
+  gradient_accumulation_steps: 1
+
+distillation:
+  kd_weight: 0.0
+  temperature: 2.0
+  kd_mode: word
+
+early_exit:
+  enabled: true              # grade every decoder layer, not just the last
+  layer_weighting: linear    # layer i gets weight i/21 (later layers count more)
+  self_distill_weight: 0.5   # Option B: also copy layer 6's answer (soft targets)
+  self_distill_temperature: 1.0
+  train_final_norm: false

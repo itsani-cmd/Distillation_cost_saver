@@ -7,6 +7,11 @@ Supports two modes from a single loop:
 * **Distillation** -- a frozen teacher is loaded and its soft logits are
   combined with CE via :func:`src.losses.combined_loss`.
 
+Either mode can additionally turn on **early-exit training**
+(``early_exit.enabled``): every decoder layer's prediction is graded via
+:func:`src.losses.multi_exit_loss`, optionally with self-distillation toward
+the final layer (``early_exit.self_distill_weight > 0``).
+
 Checkpointing is **end-of-epoch only** (per the project decision). A checkpoint
 captures everything needed to resume exactly: the LoRA adapter, optimizer,
 scheduler, epoch counter, global step, and RNG state (via accelerate's
@@ -38,8 +43,9 @@ from transformers import PreTrainedTokenizerBase, get_linear_schedule_with_warmu
 
 from src.config import Config, config_to_dict, load_config
 from src.data import build_dataloaders, build_tokenizer
+from src.early_exit.heads import all_exit_logits
 from src.evaluate import evaluate_model
-from src.losses import LossOutput, combined_loss
+from src.losses import LossOutput, combined_loss, multi_exit_loss
 from src.model import build_student, build_teacher, save_adapter, teacher_logits
 from utils.colab_utils import ProjectPaths, get_project_paths
 
@@ -66,6 +72,27 @@ def _latest_completed_epoch(paths: ProjectPaths) -> int | None:
             except (IndexError, ValueError):
                 continue
     return max(epochs) if epochs else None
+
+
+def format_log_line(epoch: int, step: int, loss_out: LossOutput) -> str:
+    """One training log line; adds per-layer CE and self-distill for early exit.
+
+    Example (early exit on)::
+
+        epoch=0 step=100 loss=2.9 ce=2.3 kd=0.0 ce_L1=4.1 ce_L2=3.6 ... ce_L6=2.3 sd=0.8
+    """
+    msg = (
+        f"epoch={epoch} step={step} "
+        f"loss={loss_out.total.item():.4f} "
+        f"ce={loss_out.ce.item():.4f} kd={loss_out.kd.item():.4f}"
+    )
+    if loss_out.per_layer_ce:
+        msg += " " + " ".join(
+            f"ce_L{i}={c.item():.4f}" for i, c in enumerate(loss_out.per_layer_ce, start=1)
+        )
+    if loss_out.self_distill is not None:
+        msg += f" sd={loss_out.self_distill.item():.4f}"
+    return msg
 
 
 class Trainer:
@@ -141,15 +168,44 @@ class Trainer:
 
         This is the single extension point for Part 2/3: per-layer hooks or
         early-exit heads slot in around the student forward here.
+
+        With ``early_exit.enabled`` every decoder layer's prediction is graded
+        via :func:`src.losses.multi_exit_loss`; otherwise this is the original
+        single-output loss, unchanged.
         """
+        ee = self.cfg.early_exit
         outputs = self.model(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
             labels=batch["labels"],
+            output_hidden_states=ee.enabled,
         )
         t_logits = None
         if self.teacher is not None and self.cfg.distillation_enabled:
             t_logits = teacher_logits(self.teacher, batch)
+
+        if ee.enabled:
+            # accelerate only autocasts inside model.forward; run the extra exit
+            # heads under the same precision so fp16/bf16 runs don't build five
+            # full-vocabulary fp32 logit tensors.
+            with self.accelerator.autocast():
+                per_layer_logits = all_exit_logits(
+                    self.model,
+                    outputs.decoder_hidden_states,
+                    final_logits=outputs.logits,
+                )
+            return multi_exit_loss(
+                per_layer_logits=per_layer_logits,
+                labels=batch["labels"],
+                teacher_logits=t_logits,
+                kd_weight=self.cfg.distillation.kd_weight,
+                temperature=self.cfg.distillation.temperature,
+                label_smoothing=self.cfg.training.label_smoothing,
+                kd_mode=self.cfg.distillation.kd_mode,
+                weighting=ee.layer_weighting,
+                self_distill_weight=ee.self_distill_weight,
+                self_distill_temperature=ee.self_distill_temperature,
+            )
 
         return combined_loss(
             student_logits=outputs.logits,
@@ -244,11 +300,7 @@ class Trainer:
                     running += loss_out.total.item()
                     seen += 1
                     if self.global_step % self.cfg.training.log_every == 0:
-                        msg = (
-                            f"epoch={epoch} step={self.global_step} "
-                            f"loss={loss_out.total.item():.4f} "
-                            f"ce={loss_out.ce.item():.4f} kd={loss_out.kd.item():.4f}"
-                        )
+                        msg = format_log_line(epoch, self.global_step, loss_out)
                         self.accelerator.print(f"[train] {msg}")
                         self._append_log(log_path, msg)
 

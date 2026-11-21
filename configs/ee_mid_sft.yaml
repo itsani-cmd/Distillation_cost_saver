@@ -1,0 +1,61 @@
+# Early exit, Option A (SFT on every layer) -- MID-SIZE run for Checkpoint 1.
+#
+# 150k sentence pairs x 2 epochs (~9.4k optimizer steps at an effective batch
+# of 32). Meant for a single GPU. Compare against ee_mid_selfdistill.yaml,
+# which differs ONLY in early_exit.self_distill_weight.
+#
+# Memory note: early exit turns all 6 decoder layers into vocabulary scores
+# (6 x batch x seq x 32k), so this uses batch_size 16 with 2 accumulation
+# steps instead of batch_size 32. If you get CUDA out-of-memory, halve
+# batch_size and double gradient_accumulation_steps (same effective batch).
+# On an A100/H100 you can switch mixed_precision to "bf16".
+
+run_name: ee_mid_sft
+
+model:
+  student_name_or_path: t5-small
+  teacher_name_or_path: null
+  prefix: "translate English to German: "
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: ["q", "v", "k", "o"]
+
+data:
+  dataset_name: Helsinki-NLP/opus-100
+  config_name: de-en
+  source_lang: en
+  target_lang: de
+  max_source_length: 128
+  max_target_length: 128
+  train_subset: 150000
+  eval_subset: 1000
+  num_workers: 4
+
+training:
+  learning_rate: 3.0e-4
+  weight_decay: 0.01
+  batch_size: 16
+  eval_batch_size: 32
+  num_epochs: 2
+  warmup_ratio: 0.05
+  label_smoothing: 0.1
+  max_grad_norm: 1.0
+  seed: 42
+  mixed_precision: "fp16"
+  log_every: 100
+  gradient_accumulation_steps: 2
+
+distillation:
+  kd_weight: 0.0
+  temperature: 2.0
+  kd_mode: word
+
+early_exit:
+  enabled: true              # grade every decoder layer, not just the last
+  layer_weighting: linear    # layer i gets weight i/21 (later layers count more)
+  self_distill_weight: 0.0   # Option A: learn only from the correct translation
+  self_distill_temperature: 1.0
+  train_final_norm: false

@@ -28,6 +28,10 @@ from transformers import AutoModelForSeq2SeqLM
 
 from src.config import Config
 
+# peft matches modules_to_save by name suffix; this hits only the decoder's
+# final norm (not the per-block "layer_norm"s, nor the encoder's final norm).
+FINAL_NORM_MODULES = ("decoder.final_layer_norm",)
+
 
 def count_parameters(model: nn.Module) -> tuple[int, int]:
     """Return ``(trainable, total)`` parameter counts for ``model``."""
@@ -40,15 +44,20 @@ def build_student(cfg: Config) -> PeftModel:
     """Load the student and wrap it with a LoRA adapter.
 
     Only the LoRA parameters are left trainable; the base weights are frozen by
-    peft.
+    peft. Exception: with ``early_exit.train_final_norm`` the decoder's final
+    layer norm (shared by every early-exit head) is also trained, via peft's
+    ``modules_to_save`` (so it is saved/loaded with the adapter).
 
     Args:
-        cfg: The run config (reads ``model.student_name_or_path`` and ``lora``).
+        cfg: The run config (reads ``model.student_name_or_path``, ``lora`` and
+            ``early_exit.train_final_norm``).
 
     Returns:
         A peft ``PeftModel`` wrapping the T5 student.
     """
     base = AutoModelForSeq2SeqLM.from_pretrained(cfg.model.student_name_or_path)
+    ee = cfg.early_exit
+    modules_to_save = list(FINAL_NORM_MODULES) if ee.enabled and ee.train_final_norm else None
     peft_cfg = PeftLoraConfig(
         task_type=TaskType.SEQ_2_SEQ_LM,
         r=cfg.lora.r,
@@ -56,6 +65,7 @@ def build_student(cfg: Config) -> PeftModel:
         lora_dropout=cfg.lora.dropout,
         target_modules=list(cfg.lora.target_modules),
         bias="none",
+        modules_to_save=modules_to_save,
     )
     model = get_peft_model(base, peft_cfg)
     return model
