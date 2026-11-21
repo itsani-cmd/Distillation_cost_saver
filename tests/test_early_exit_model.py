@@ -192,3 +192,145 @@ def test_layer_report_sane_numbers():
     assert sum(fractions) == pytest.approx(1.0)
     assert 1.0 <= report["oracle"]["avg_exit_layer"] <= 6.0
     assert "oracle" in format_report(report)
+
+
+# --------------------------------------------------------------------------- Part 2
+SENTENCES = [
+    "translate English to German: I have a dog.",
+    "translate English to German: The weather is nice today.",
+    "translate English to German: Where is the train station?",
+]
+
+
+def _src(tokenizer, text):
+    enc = tokenizer(text, return_tensors="pt")
+    return enc["input_ids"], enc["attention_mask"]
+
+
+def _greedy_generate(model, ids, mask, max_new_tokens):
+    out = model.generate(
+        input_ids=ids,
+        attention_mask=mask,
+        num_beams=1,
+        do_sample=False,
+        max_new_tokens=max_new_tokens,
+    )
+    return out[0, 1:].tolist()  # drop the decoder start token
+
+
+def test_early_exit_full_model_matches_hf_greedy():
+    """Never stopping early must reproduce HF greedy decoding exactly."""
+    from src.data import build_tokenizer
+    from src.early_exit.decode import early_exit_greedy
+    from src.model import build_student
+
+    tok = build_tokenizer("t5-small")
+    model = build_student(_cfg()).eval()
+    for text in SENTENCES:
+        ids, mask = _src(tok, text)
+        expected = _greedy_generate(model, ids, mask, 30)
+        for kwargs in (
+            {"rule": "static", "static_layer": 6},
+            {"rule": "softmax", "threshold": 1.0},
+        ):
+            out = early_exit_greedy(model, ids, mask, max_new_tokens=30, **kwargs)
+            assert out.token_ids == expected, (text, kwargs)
+            assert out.exit_layers == [6] * len(out.token_ids)
+
+
+def test_static_exit_matches_truncated_decoder():
+    """'Always stop at layer k' == a model whose decoder only has its first k layers.
+
+    With every word stopping at k, layers above k only ever hold copied states
+    that layers <= k never read, so the translation must equal greedy decoding
+    with a k-layer decoder. This checks the hooks, the state copying and the
+    exit heads together.
+    """
+    import copy
+
+    import torch
+
+    from src.data import build_tokenizer
+    from src.early_exit.decode import early_exit_greedy
+    from src.early_exit.heads import unwrap_t5
+    from src.model import build_student
+
+    tok = build_tokenizer("t5-small")
+    model = build_student(_cfg()).eval()
+    full_blocks = list(unwrap_t5(model).decoder.block)
+    for k in (2, 4):
+        truncated = copy.deepcopy(unwrap_t5(model))
+        truncated.decoder.block = torch.nn.ModuleList(full_blocks[:k])
+        truncated.config.num_decoder_layers = k  # keep generate()'s cache sizing consistent
+        for text in SENTENCES:
+            ids, mask = _src(tok, text)
+            expected = _greedy_generate(truncated, ids, mask, 30)
+            out = early_exit_greedy(
+                model, ids, mask, rule="static", static_layer=k, max_new_tokens=30
+            )
+            assert out.token_ids == expected, (k, text)
+            assert out.avg_layers == k
+
+
+def test_softmax_and_oracle_exit_layers_are_sane():
+    from src.data import build_tokenizer
+    from src.early_exit.decode import early_exit_greedy
+    from src.model import build_student
+
+    tok = build_tokenizer("t5-small")
+    model = build_student(_cfg()).eval()
+    ids, mask = _src(tok, SENTENCES[0])
+
+    always_first = early_exit_greedy(
+        model, ids, mask, rule="softmax", threshold=0.0, max_new_tokens=20
+    )
+    assert set(always_first.exit_layers) == {1}
+
+    for rule in ("softmax", "oracle"):
+        out = early_exit_greedy(model, ids, mask, rule=rule, threshold=0.5, max_new_tokens=30)
+        assert len(out.exit_layers) == len(out.token_ids) > 0
+        assert all(1 <= e <= 6 for e in out.exit_layers)
+
+
+def test_early_exit_rejects_batches():
+    import torch
+
+    from src.early_exit.decode import early_exit_greedy
+    from src.model import build_student
+
+    model = build_student(_cfg()).eval()
+    with pytest.raises(ValueError):
+        early_exit_greedy(model, torch.ones(2, 4, dtype=torch.long))
+
+
+def test_run_sweep_end_to_end(tmp_path):
+    import torch
+
+    from src.data import build_tokenizer
+    from src.early_exit.run_eval import (
+        EvalSentence,
+        build_run_specs,
+        run_sweep,
+        save_results,
+    )
+    from src.model import build_student
+
+    tok = build_tokenizer("t5-small")
+    model = build_student(_cfg()).eval()
+    sentences = []
+    for text, ref in zip(SENTENCES[:2], ["Ich habe einen Hund.", "Das Wetter ist heute schön."]):
+        ids, mask = _src(tok, text)
+        sentences.append(EvalSentence(ids, mask, text, ref))
+
+    specs = build_run_specs(6, thresholds=(0.5,), static_layers=(3,))
+    rows, hyps = run_sweep(model, tok, sentences, specs, torch.device("cpu"), 20, log=False)
+
+    by_name = {r["name"]: r for r in rows}
+    assert set(by_name) == {"full", "static_L3", "softmax_0.5", "oracle"}
+    assert by_name["full"]["avg_layers"] == 6.0
+    assert by_name["full"]["bleu_vs_full"] == pytest.approx(100.0)
+    assert by_name["static_L3"]["avg_layers"] == 3.0
+    assert by_name["oracle"]["avg_layers"] <= 6.0
+
+    paths = save_results(tmp_path, rows, hyps, sentences, {"test": True})
+    assert paths["csv"].exists() and paths["json"].exists()

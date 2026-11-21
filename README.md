@@ -77,6 +77,29 @@ the best-case average exit layer. If early layers stay weak, set
 
 Tests: `pytest` (fast) and `RUN_HEAVY_TESTS=1 pytest tests/test_early_exit_model.py`.
 
+## Part 3 (in progress): early exit, Milestone 2 — translate with early stopping
+
+`src/early_exit/decode.py` translates one sentence greedily; after each decoder
+layer a stopping rule decides whether the word is final. Skipped layers get the
+stopping layer's state copied in, so later words still have something to attend
+to. Stopping rules (`src/early_exit/confidence.py`):
+
+| Rule | Stops when | Role |
+|---|---|---|
+| `softmax` | top-1 minus top-2 probability ≥ λ | the real method |
+| `static` | always at layer k | baseline to beat |
+| `oracle` | first layer agreeing with layer 6 | upper bound (cheats) |
+
+```bash
+python -m src.early_exit.run_eval --config configs/ee_mid_selfdistill.yaml   # 300 sentences
+```
+
+Writes `results.csv`, `results.json` (with example translations) and
+`tradeoff.png` (BLEU vs average layers per word) under the run's
+`outputs/early_exit_eval/`. All runs use greedy decoding, so compare rows with
+the `full` row, not with training's beam-search BLEU. Version 1 still computes
+every layer, so it measures **layers needed**, not wall-clock speed.
+
 ## Configuration
 
 Configs are YAML, validated into dataclasses (`src/config.py`). Start from
