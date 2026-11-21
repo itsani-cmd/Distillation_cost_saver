@@ -286,6 +286,14 @@ def test_softmax_and_oracle_exit_layers_are_sane():
     )
     assert set(always_first.exit_layers) == {1}
 
+    # threshold 0 + min layer 3 == "always stop at layer 3"
+    min3 = early_exit_greedy(
+        model, ids, mask, rule="softmax", threshold=0.0, min_exit_layer=3, max_new_tokens=20
+    )
+    static3 = early_exit_greedy(model, ids, mask, rule="static", static_layer=3, max_new_tokens=20)
+    assert set(min3.exit_layers) == {3}
+    assert min3.token_ids == static3.token_ids
+
     for rule in ("softmax", "oracle"):
         out = early_exit_greedy(model, ids, mask, rule=rule, threshold=0.5, max_new_tokens=30)
         assert len(out.exit_layers) == len(out.token_ids) > 0
@@ -322,11 +330,12 @@ def test_run_sweep_end_to_end(tmp_path):
         ids, mask = _src(tok, text)
         sentences.append(EvalSentence(ids, mask, text, ref))
 
-    specs = build_run_specs(6, thresholds=(0.5,), static_layers=(3,))
+    specs = build_run_specs(6, thresholds=(0.5,), static_layers=(3,), min_layers=(1, 2))
     rows, hyps = run_sweep(model, tok, sentences, specs, torch.device("cpu"), 20, log=False)
 
     by_name = {r["name"]: r for r in rows}
-    assert set(by_name) == {"full", "static_L3", "softmax_0.5", "oracle"}
+    assert set(by_name) == {"full", "static_L3", "softmax_0.5", "softmax_0.5_min2", "oracle"}
+    assert by_name["softmax_0.5_min2"]["exit_L1"] == 0.0
     assert by_name["full"]["avg_layers"] == 6.0
     assert by_name["full"]["bleu_vs_full"] == pytest.approx(100.0)
     assert by_name["static_L3"]["avg_layers"] == 3.0

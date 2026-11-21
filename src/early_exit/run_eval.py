@@ -11,7 +11,13 @@ stopping rule / setting and reports, for each run:
 * ``exit_L1..exit_L6`` -- fraction of words that stopped at each layer.
 
 Runs: the full model (static, layer L = the baseline), static exits at
-layers ``1..L-1``, the softmax rule over a threshold sweep, and the oracle.
+layers ``1..L-1``, the softmax rule over a threshold sweep (optionally for
+several minimum exit layers, e.g. "never stop before layer 2"), and the oracle.
+
+Each translation is capped at ``max_len_ratio * source_length + 10`` tokens
+(default ratio 2). Real translations are about as long as the source; the cap
+stops garbage outputs (e.g. from very early exits) from running to the
+127-token limit, which made those runs very slow.
 
 All runs use **greedy** decoding, so the baseline BLEU is lower than the
 beam-search BLEU printed at the end of training; compare rows with each other.
@@ -44,6 +50,7 @@ from src.early_exit.heads import num_decoder_layers
 from src.evaluate import compute_bleu
 
 DEFAULT_THRESHOLDS = (0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1)
+DEFAULT_MAX_LEN_RATIO = 2.0
 NUM_EXAMPLES_SAVED = 5
 
 
@@ -65,6 +72,7 @@ class RunSpec:
     rule: str
     threshold: float = 1.0
     static_layer: int = 0
+    min_layer: int = 1
 
 
 def load_eval_sentences(cfg: Config, tokenizer: Any, num_sentences: int) -> list[EvalSentence]:
@@ -96,14 +104,23 @@ def build_run_specs(
     thresholds: tuple[float, ...] = DEFAULT_THRESHOLDS,
     static_layers: tuple[int, ...] | None = None,
     oracle: bool = True,
+    min_layers: tuple[int, ...] = (1,),
 ) -> list[RunSpec]:
-    """The sweep: full baseline first, then static, softmax and oracle runs."""
+    """The sweep: full baseline first, then static, softmax and oracle runs.
+
+    Softmax runs are made for every ``(min_layer, threshold)`` pair; names get a
+    ``_min{m}`` suffix when ``m > 1`` (e.g. ``softmax_0.9_min2``).
+    """
     specs = [RunSpec(name="full", rule="static", static_layer=num_layers)]
     for k in static_layers if static_layers is not None else range(1, num_layers):
         if 1 <= k < num_layers:
             specs.append(RunSpec(name=f"static_L{k}", rule="static", static_layer=k))
-    for lam in thresholds:
-        specs.append(RunSpec(name=f"softmax_{lam:g}", rule="softmax", threshold=lam))
+    for m in min_layers:
+        suffix = "" if m <= 1 else f"_min{m}"
+        for lam in thresholds:
+            specs.append(
+                RunSpec(name=f"softmax_{lam:g}{suffix}", rule="softmax", threshold=lam, min_layer=m)
+            )
     if oracle:
         specs.append(RunSpec(name="oracle", rule="oracle"))
     return specs
@@ -116,8 +133,12 @@ def run_one(
     spec: RunSpec,
     device: torch.device,
     max_new_tokens: int,
+    max_len_ratio: float = DEFAULT_MAX_LEN_RATIO,
 ) -> tuple[list[str], list[int], float]:
     """Translate every sentence with one setting.
+
+    ``max_len_ratio > 0`` caps each output at ``ratio * source_length + 10``
+    tokens (and never above ``max_new_tokens``); ``0`` disables the cap.
 
     Returns:
         ``(hypotheses, all_exit_layers, seconds_per_sentence)``.
@@ -126,6 +147,9 @@ def run_one(
     exits: list[int] = []
     start = time.perf_counter()
     for s in sentences:
+        limit = max_new_tokens
+        if max_len_ratio > 0:
+            limit = min(limit, int(max_len_ratio * s.input_ids.size(1)) + 10)
         out = early_exit_greedy(
             model,
             s.input_ids.to(device),
@@ -133,7 +157,8 @@ def run_one(
             rule=spec.rule,
             threshold=spec.threshold,
             static_layer=spec.static_layer,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=limit,
+            min_exit_layer=spec.min_layer,
         )
         hyps.append(tokenizer.decode(out.token_ids, skip_special_tokens=True))
         exits.extend(out.exit_layers)
@@ -158,6 +183,7 @@ def summarize(
         "rule": spec.rule,
         "threshold": spec.threshold if spec.rule == "softmax" else None,
         "static_layer": spec.static_layer if spec.rule == "static" else None,
+        "min_exit_layer": spec.min_layer if spec.rule == "softmax" else None,
         "bleu": compute_bleu(hyps, references),
         "bleu_vs_full": compute_bleu(hyps, full_hyps),
         "avg_layers": avg,
@@ -179,6 +205,7 @@ def run_sweep(
     device: torch.device,
     max_new_tokens: int,
     log: bool = True,
+    max_len_ratio: float = DEFAULT_MAX_LEN_RATIO,
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     """Run every spec. ``specs[0]`` must be the full-model baseline.
 
@@ -193,7 +220,9 @@ def run_sweep(
     all_hyps: dict[str, list[str]] = {}
     full_hyps: list[str] = []
     for spec in specs:
-        hyps, exits, sps = run_one(model, tokenizer, sentences, spec, device, max_new_tokens)
+        hyps, exits, sps = run_one(
+            model, tokenizer, sentences, spec, device, max_new_tokens, max_len_ratio
+        )
         if spec.name == "full":
             full_hyps = hyps
         row = summarize(spec, hyps, exits, sps, references, full_hyps, num_layers)
@@ -201,7 +230,7 @@ def run_sweep(
         all_hyps[spec.name] = hyps
         if log:
             print(
-                f"[run_eval] {spec.name:>12}: BLEU={row['bleu']:6.2f}  "
+                f"[run_eval] {spec.name:>17}: BLEU={row['bleu']:6.2f}  "
                 f"vs_full={row['bleu_vs_full']:6.2f}  avg_layers={row['avg_layers']:.2f}  "
                 f"({row['layer_reduction'] or 0:.2f}x fewer)"
             )
@@ -210,11 +239,11 @@ def run_sweep(
 
 def format_table(rows: list[dict[str, Any]]) -> str:
     """Readable results table."""
-    header = f"{'run':>12} | {'BLEU':>6} | {'vs full':>7} | {'avg layers':>10} | {'reduction':>9}"
+    header = f"{'run':>17} | {'BLEU':>6} | {'vs full':>7} | {'avg layers':>10} | {'reduction':>9}"
     lines = [header, "-" * len(header)]
     for r in rows:
         lines.append(
-            f"{r['name']:>12} | {r['bleu']:6.2f} | {r['bleu_vs_full']:7.2f} | "
+            f"{r['name']:>17} | {r['bleu']:6.2f} | {r['bleu_vs_full']:7.2f} | "
             f"{r['avg_layers']:10.2f} | {r['layer_reduction'] or 0:8.2f}x"
         )
     return "\n".join(lines)
@@ -275,7 +304,11 @@ def plot_tradeoff(rows: list[dict[str, Any]], path: Path) -> Path | None:
     static = sorted(
         [r for r in rows if r["rule"] == "static"], key=lambda r: r["avg_layers"]
     )  # includes full (layer L) as the right end of the static line
-    soft = sorted([r for r in rows if r["rule"] == "softmax"], key=lambda r: r["avg_layers"])
+    soft_rows = [r for r in rows if r["rule"] == "softmax"]
+    soft_by_min = {
+        m: sorted([r for r in soft_rows if r["min_exit_layer"] == m], key=lambda r: r["avg_layers"])
+        for m in sorted({r["min_exit_layer"] for r in soft_rows})
+    }
     oracle = [r for r in rows if r["rule"] == "oracle"]
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
@@ -290,10 +323,9 @@ def plot_tradeoff(rows: list[dict[str, Any]], path: Path) -> Path | None:
                 "s--",
                 label="static (stop at layer k)",
             )
-        if soft:
-            ax.plot(
-                pick(soft, "avg_layers"), pick(soft, key), "o-", label="softmax gap (threshold λ)"
-            )
+        for m, soft in soft_by_min.items():
+            label = "softmax gap (λ)" if m == 1 else f"softmax gap (λ), min layer {m}"
+            ax.plot(pick(soft, "avg_layers"), pick(soft, key), "o-", label=label)
             for r in soft:
                 ax.annotate(
                     f"{r['threshold']:g}",
@@ -344,6 +376,19 @@ def main() -> None:
     )
     parser.add_argument("--no-oracle", action="store_true", help="Skip the oracle run.")
     parser.add_argument(
+        "--min-exit-layers",
+        type=int,
+        nargs="+",
+        default=[1],
+        help="Softmax rule: never stop before this layer; one sweep per value (e.g. 2 3).",
+    )
+    parser.add_argument(
+        "--max-len-ratio",
+        type=float,
+        default=DEFAULT_MAX_LEN_RATIO,
+        help="Cap outputs at ratio*source_len+10 tokens (0 = no cap).",
+    )
+    parser.add_argument(
         "--max-new-tokens", type=int, default=None, help="Default: max_target_length - 1."
     )
     parser.add_argument("--output-dir", help="Default: <run outputs>/early_exit_eval[_no_adapter].")
@@ -374,12 +419,15 @@ def main() -> None:
         thresholds=tuple(args.thresholds),
         static_layers=tuple(args.static_layers) if args.static_layers is not None else None,
         oracle=not args.no_oracle,
+        min_layers=tuple(args.min_exit_layers),
     )
     sentences = load_eval_sentences(cfg, tokenizer, args.num_sentences)
     max_new = args.max_new_tokens or cfg.data.max_target_length - 1
     print(f"[run_eval] {len(sentences)} sentences x {len(specs)} runs on {device}")
 
-    rows, all_hyps = run_sweep(model, tokenizer, sentences, specs, device, max_new)
+    rows, all_hyps = run_sweep(
+        model, tokenizer, sentences, specs, device, max_new, max_len_ratio=args.max_len_ratio
+    )
 
     suffix = "_no_adapter" if args.no_adapter else ""
     out_dir = (
@@ -393,6 +441,7 @@ def main() -> None:
         "num_sentences": len(sentences),
         "num_layers": num_layers,
         "decoding": "greedy, batch size 1",
+        "max_len_ratio": args.max_len_ratio,
     }
     paths = save_results(out_dir, rows, all_hyps, sentences, meta)
     print()

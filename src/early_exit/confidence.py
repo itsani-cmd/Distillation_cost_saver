@@ -4,7 +4,8 @@ Three rules (Part 2):
 
 * ``"softmax"`` -- CALM's *softmax response*: stop at the first layer whose
   top-1 minus top-2 word probability (:func:`softmax_gap`) reaches the threshold.
-  This is the real method.
+  This is the real method. An optional ``min_layer`` forbids stopping before a
+  given layer (our layer 1 is often confidently wrong, see the Part 2 results).
 * ``"static"`` -- always stop at a fixed layer ``k``. The "dumb" baseline every
   smart rule must beat.
 * ``"oracle"`` -- stop at the first layer whose top word equals the LAST
@@ -48,6 +49,7 @@ def pick_exit_layer(
     rule: str,
     threshold: float = 0.9,
     static_layer: int = 3,
+    min_layer: int = 1,
 ) -> tuple[int, torch.Tensor]:
     """Decide which layer one word stops at, and return that layer's word scores.
 
@@ -62,6 +64,9 @@ def pick_exit_layer(
             ``threshold >= 1`` means "never stop early" (always use layer ``L``).
         static_layer: ``"static"`` only. The layer to always stop at (clipped
             to ``[1, L]``).
+        min_layer: ``"softmax"`` only. Never stop before this layer (clipped to
+            ``[1, L]``); layers below it are not even scored. Useful when the
+            shallowest layers are confidently wrong.
 
     Returns:
         ``(exit_layer, logits)`` -- the 1-based layer chosen and its word scores.
@@ -77,7 +82,7 @@ def pick_exit_layer(
         return layer, get_logits(layer)
 
     if rule == "softmax":
-        for layer in range(1, num_layers + 1):
+        for layer in range(min(max(min_layer, 1), num_layers), num_layers + 1):
             logits = get_logits(layer)
             if layer == num_layers:
                 return layer, logits

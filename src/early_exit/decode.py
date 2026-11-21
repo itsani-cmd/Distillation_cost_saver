@@ -72,6 +72,7 @@ def early_exit_greedy(
     threshold: float = 0.9,
     static_layer: int = 3,
     max_new_tokens: int = 127,
+    min_exit_layer: int = 1,
 ) -> EarlyExitOutput:
     """Translate ONE sentence greedily, stopping each word at an early layer.
 
@@ -83,6 +84,7 @@ def early_exit_greedy(
         threshold: Softmax-rule threshold ``λ`` (``1.0`` = never stop early).
         static_layer: Static-rule layer.
         max_new_tokens: Maximum number of tokens to generate.
+        min_exit_layer: Softmax rule only: never stop before this layer.
 
     Returns:
         An :class:`EarlyExitOutput` with the tokens and per-token exit layers.
@@ -163,6 +165,7 @@ def early_exit_greedy(
                 rule,
                 threshold=constant_threshold(threshold, position[0]),
                 static_layer=static_layer,
+                min_layer=min_exit_layer,
             )
             token = int(logits.argmax(dim=-1))
 

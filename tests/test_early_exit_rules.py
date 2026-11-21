@@ -71,6 +71,24 @@ def test_softmax_threshold_zero_always_exits_at_layer_one():
     assert pick_exit_layer(get, 6, "softmax", threshold=0.0)[0] == 1
 
 
+def test_softmax_min_layer_skips_shallow_layers():
+    # Layer 1 is confidently wrong; with min_layer=2 it must not even be scored.
+    get, seen = _layers([(0, True), (1, False), (2, True), (2, True), (2, True), (2, True)])
+    layer, logits = pick_exit_layer(get, 6, "softmax", threshold=0.5, min_layer=2)
+    assert layer == 3
+    assert int(logits.argmax()) == 2
+    assert seen == [2, 3]
+    # Without it, the confidently wrong layer 1 wins.
+    get, _ = _layers([(0, True), (1, False), (2, True), (2, True), (2, True), (2, True)])
+    assert pick_exit_layer(get, 6, "softmax", threshold=0.5)[0] == 1
+
+
+def test_softmax_min_layer_is_clipped():
+    get, _ = _layers([(0, True)] * 6)
+    assert pick_exit_layer(get, 6, "softmax", threshold=0.0, min_layer=99)[0] == 6
+    assert pick_exit_layer(get, 6, "softmax", threshold=0.0, min_layer=0)[0] == 1
+
+
 def test_oracle_stops_at_first_layer_matching_last():
     get, _ = _layers([(0, True), (3, False), (2, True), (2, True), (1, True), (2, True)])
     layer, logits = pick_exit_layer(get, 6, "oracle")
@@ -119,6 +137,12 @@ def test_build_run_specs_sweep():
         "full",
         "static_L2",
     ]
+    mins = build_run_specs(6, thresholds=(0.9,), static_layers=(), oracle=False, min_layers=(1, 3))
+    assert [(s.name, s.min_layer) for s in mins] == [
+        ("full", 1),
+        ("softmax_0.9", 1),
+        ("softmax_0.9_min3", 3),
+    ]
 
 
 def test_summarize_and_table():
@@ -135,4 +159,5 @@ def test_summarize_and_table():
     assert row["layer_reduction"] == pytest.approx(2.0)
     assert row["exit_L1"] == pytest.approx(0.25) and row["exit_L4"] == 0.0
     assert row["static_layer"] is None and row["threshold"] == 0.5
+    assert row["min_exit_layer"] == 1
     assert "softmax_0.5" in format_table([row])
