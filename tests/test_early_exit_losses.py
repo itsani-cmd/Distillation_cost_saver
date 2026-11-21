@@ -138,3 +138,30 @@ def test_format_log_line_includes_layers():
     assert "ce_L1=" in line and "ce_L2=" in line and "sd=" in line
     plain = format_log_line(0, 10, combined_loss(_logits(11), LABELS))
     assert "ce_L1" not in plain and "sd=" not in plain
+
+
+def test_half_precision_logits_do_not_give_inf_loss():
+    """Regression: fp16 early-layer logits made the label-smoothed CE inf.
+
+    A spread of 120k between logits underflows fp16 log-softmax to -inf; the
+    loss must cast to float32 first and stay finite.
+    """
+    big = torch.zeros(2, 3, 7)
+    big[..., 0] = 60000.0
+    big[..., 1] = -60000.0
+    layers = [big.half(), _logits(13).half()]
+    out = multi_exit_loss(layers, LABELS, label_smoothing=0.1, self_distill_weight=0.5)
+    assert torch.isfinite(out.total)
+    assert all(torch.isfinite(c) for c in out.per_layer_ce)
+
+
+def test_check_finite_loss_resets_and_raises():
+    pytest.importorskip("accelerate")
+    from src.train import MAX_CONSECUTIVE_BAD_LOSSES, check_finite_loss
+
+    good = LossOutput(total=torch.tensor(1.0), ce=torch.tensor(1.0), kd=torch.tensor(0.0))
+    bad = LossOutput(total=torch.tensor(float("inf")), ce=torch.tensor(1.0), kd=torch.tensor(0.0))
+    assert check_finite_loss(bad, 0) == 1
+    assert check_finite_loss(good, 5) == 0  # a finite loss resets the streak
+    with pytest.raises(RuntimeError, match="non-finite"):
+        check_finite_loss(bad, MAX_CONSECUTIVE_BAD_LOSSES - 1)

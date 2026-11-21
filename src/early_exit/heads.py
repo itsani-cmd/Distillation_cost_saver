@@ -75,10 +75,18 @@ def exit_logits(model: nn.Module, hidden: torch.Tensor) -> torch.Tensor:
 
 
 def _project(t5: nn.Module, normed_hidden: torch.Tensor) -> torch.Tensor:
-    """Apply T5's tied-embedding rescale and the shared ``lm_head``."""
-    if getattr(t5.config, "tie_word_embeddings", True):
-        normed_hidden = normed_hidden * (t5.config.d_model**-0.5)
-    return t5.lm_head(normed_hidden)
+    """Apply T5's tied-embedding rescale and the shared ``lm_head``, in float32.
+
+    Always runs in float32, even inside an fp16/bf16 autocast region. Early
+    decoder layers produce logits far outside fp16's range (max ~65504); in
+    fp16 some overflow to ``-inf`` and the label-smoothed CE becomes ``inf``,
+    which makes the fp16 grad scaler skip every optimizer step.
+    """
+    with torch.autocast(device_type=normed_hidden.device.type, enabled=False):
+        h = normed_hidden.float()
+        if getattr(t5.config, "tie_word_embeddings", True):
+            h = h * (t5.config.d_model**-0.5)
+        return t5.lm_head(h)
 
 
 def all_exit_logits(

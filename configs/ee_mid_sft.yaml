@@ -1,6 +1,6 @@
 # Early exit, Option A (SFT on every layer) -- MID-SIZE run for Checkpoint 1.
 #
-# 150k sentence pairs x 2 epochs (~9.4k optimizer steps at an effective batch
+# 150k sentence pairs x 1 epoch (~4.7k optimizer steps at an effective batch
 # of 32). Meant for a single GPU. Compare against ee_mid_selfdistill.yaml,
 # which differs ONLY in early_exit.self_distill_weight.
 #
@@ -39,7 +39,7 @@ training:
   weight_decay: 0.01
   batch_size: 16
   eval_batch_size: 32
-  num_epochs: 2
+  num_epochs: 1
   warmup_ratio: 0.05
   label_smoothing: 0.1
   max_grad_norm: 1.0

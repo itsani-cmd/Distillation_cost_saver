@@ -238,6 +238,8 @@ def multi_exit_loss(
     if self_distill_weight < 0:
         raise ValueError(f"self_distill_weight must be >= 0, got {self_distill_weight}")
 
+    # Losses in float32: half-precision log-softmax over 32k words can hit -inf.
+    per_layer_logits = [lg.float() for lg in per_layer_logits]
     weights = layer_weights(len(per_layer_logits), weighting)
     final_target = per_layer_logits[-1].detach()
     last = len(per_layer_logits) - 1

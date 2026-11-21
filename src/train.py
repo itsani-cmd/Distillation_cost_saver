@@ -95,6 +95,43 @@ def format_log_line(epoch: int, step: int, loss_out: LossOutput) -> str:
     return msg
 
 
+# Stop training after this many consecutive non-finite (inf/nan) losses.
+MAX_CONSECUTIVE_BAD_LOSSES = 10
+
+
+def check_finite_loss(loss_out: LossOutput, bad_steps: int) -> int:
+    """Count consecutive non-finite losses and fail fast if they persist.
+
+    With fp16, a non-finite loss makes the grad scaler silently skip the
+    optimizer step, so a run can "train" for hours without learning. A few
+    isolated bad batches are tolerated; a streak raises with a diagnosis.
+
+    Args:
+        loss_out: This step's loss.
+        bad_steps: Consecutive non-finite steps seen so far.
+
+    Returns:
+        The updated consecutive count (reset to 0 on a finite loss).
+
+    Raises:
+        RuntimeError: After :data:`MAX_CONSECUTIVE_BAD_LOSSES` bad steps in a row.
+    """
+    if bool(torch.isfinite(loss_out.total)):
+        return 0
+    bad_steps += 1
+    if bad_steps >= MAX_CONSECUTIVE_BAD_LOSSES:
+        per_layer = ", ".join(
+            f"L{i}={c.item():.3g}" for i, c in enumerate(loss_out.per_layer_ce, start=1)
+        )
+        raise RuntimeError(
+            f"loss was non-finite for {bad_steps} steps in a row "
+            f"(total={loss_out.total.item()}, ce={loss_out.ce.item()}"
+            + (f", per-layer CE: {per_layer}" if per_layer else "")
+            + "). Training is not learning; try training.mixed_precision: 'no' or 'bf16'."
+        )
+    return bad_steps
+
+
 class Trainer:
     """Drives SFT / distillation training with epoch checkpointing.
 
@@ -185,15 +222,13 @@ class Trainer:
             t_logits = teacher_logits(self.teacher, batch)
 
         if ee.enabled:
-            # accelerate only autocasts inside model.forward; run the extra exit
-            # heads under the same precision so fp16/bf16 runs don't build five
-            # full-vocabulary fp32 logit tensors.
-            with self.accelerator.autocast():
-                per_layer_logits = all_exit_logits(
-                    self.model,
-                    outputs.decoder_hidden_states,
-                    final_logits=outputs.logits,
-                )
+            # Exit heads always compute in float32 (see heads._project): early
+            # layers' logits overflow fp16 and turn the loss into inf.
+            per_layer_logits = all_exit_logits(
+                self.model,
+                outputs.decoder_hidden_states,
+                final_logits=outputs.logits,
+            )
             return multi_exit_loss(
                 per_layer_logits=per_layer_logits,
                 labels=batch["labels"],
@@ -283,9 +318,11 @@ class Trainer:
             self.model.train()
             running = 0.0
             seen = 0
+            bad_steps = 0
             for batch in self.train_loader:
                 with self.accelerator.accumulate(self.model):
                     loss_out = self._train_step(batch)
+                    bad_steps = check_finite_loss(loss_out, bad_steps)
                     self.accelerator.backward(loss_out.total)
                     if self.accelerator.sync_gradients and self.cfg.training.max_grad_norm > 0:
                         self.accelerator.clip_grad_norm_(

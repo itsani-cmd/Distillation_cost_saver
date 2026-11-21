@@ -77,6 +77,24 @@ def test_last_exit_head_matches_model_logits():
         assert lg.shape == out.logits.shape
 
 
+def test_exit_heads_compute_in_float32_under_autocast():
+    """Regression: exit logits must not be half precision (fp16 overflow -> inf loss)."""
+    import torch
+
+    from src.data import build_tokenizer
+    from src.early_exit.heads import all_exit_logits
+    from src.model import build_student
+
+    model = build_student(_cfg()).eval()
+    batch = _toy_batch(build_tokenizer("t5-small"))
+    with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+        out = model(**batch, output_hidden_states=True)
+        per_layer = all_exit_logits(model, out.decoder_hidden_states)
+    for lg in per_layer:
+        assert lg.dtype == torch.float32
+        assert torch.isfinite(lg).all()
+
+
 def test_exit_head_matches_truncated_decoder():
     """Layer-i exit == running a decoder that only has its first i layers.
 
