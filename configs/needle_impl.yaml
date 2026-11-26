@@ -1,0 +1,44 @@
+# Matches src.config.Config so existing data.py can be reused unchanged.
+run_name: needle_p0
+model:
+  student_name_or_path: t5-small
+  # Must share EXACT tokenizer and vocab; FLAN-T5-base is a candidate, not a proven translation teacher.
+  teacher_name_or_path: google/flan-t5-base
+  prefix: "translate English to German: "
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: ["q", "k", "v", "o"]
+data:
+  dataset_name: Helsinki-NLP/opus-100
+  config_name: de-en
+  source_lang: en
+  target_lang: de
+  max_source_length: 48
+  max_target_length: 48
+  train_subset: 1000
+  eval_subset: 100
+  num_workers: 0
+training:
+  learning_rate: 0.0003
+  weight_decay: 0.0
+  batch_size: 1
+  eval_batch_size: 1
+  num_epochs: 1
+  warmup_ratio: 0.0
+  label_smoothing: 0.0
+  max_grad_norm: 0.0
+  mixed_precision: "no"
+  log_every: 10
+  gradient_accumulation_steps: 1
+distillation:
+  kd_weight: 0.5
+  temperature: 2.0
+  kd_mode: word
+early_exit:
+  enabled: true
+  layer_weighting: linear
+  self_distill_weight: 0.0
+  self_distill_temperature: 1.0
+  train_final_norm: false
