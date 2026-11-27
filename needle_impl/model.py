@@ -4,6 +4,7 @@ import numpy as np
 import needle as ndl
 from needle import nn
 from .transformer import T5Stack, attention_mask
+from .lora import linear_last_dim
 
 
 @dataclass
@@ -54,7 +55,9 @@ class NeedleT5(nn.Module):
     def project(self, hidden):
         if self.config.tie_word_embeddings:
             hidden = hidden * (self.config.d_model ** -0.5)
-        return hidden @ self.shared.weight.transpose((0, 1))
+
+        weight = self.shared.weight.transpose((0, 1))
+        return linear_last_dim(hidden, weight)
 
     def forward(self, input_ids, decoder_input_ids, attention_mask=None,
                 decoder_attention_mask=None, return_all_exits=False):

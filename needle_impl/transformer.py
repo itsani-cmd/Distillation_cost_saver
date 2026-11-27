@@ -29,17 +29,19 @@ class T5LayerNorm(nn.Module):
     def forward(self, x):
         d = x.shape[-1]
 
-        # Use a positive axis because this Needle backend
-        # does not correctly support negative reduction axes.
-        variance = ops.summation(x * x, axes=(len(x.shape) - 1,)) / d
+        # T5 RMS normalization: no mean subtraction.
+        variance = ops.summation(
+            x * x,
+            axes=(len(x.shape) - 1,)
+        ) / d
 
         scale = ops.power_scalar(variance + self.eps, -0.5)
 
-        scale = scale.reshape(x.shape[:-1] + (1,))
-        scale = scale.broadcast_to(x.shape)
+        scale_shape = x.shape[:-1] + (1,)
+        scale = scale.reshape(scale_shape).broadcast_to(x.shape)
 
-        weight = self.weight.reshape((1,) * (len(x.shape) - 1) + (d,))
-        weight = weight.broadcast_to(x.shape)
+        weight_shape = (1,) * (len(x.shape) - 1) + (d,)
+        weight = self.weight.reshape(weight_shape).broadcast_to(x.shape)
 
         return x * scale * weight
 

@@ -30,9 +30,33 @@ def relative_position_buckets(query_length, key_length, bidirectional=True,
 
 
 def softmax_last(x):
-    """Numerically stable softmax over the last axis using Needle operations."""
-    z = ops.logsumexp(x, axes=(len(x.shape) - 1,))
-    return ops.exp(x - z.reshape(x.shape[:-1] + (1,)).broadcast_to(x.shape))
+    """Numerically stable softmax over the last axis."""
+    axis = len(x.shape) - 1
+    z = ops.logsumexp(x, axes=(axis,))
+    z = z.reshape(x.shape[:-1] + (1,))
+    return ops.exp(x - z.broadcast_to(x.shape))
+
+
+def batched_matmul(a, b):
+    """Multiply tensors over matching batch dimensions using 2D matmul."""
+    assert len(a.shape) == len(b.shape)
+    assert a.shape[:-2] == b.shape[:-2]
+    assert a.shape[-1] == b.shape[-2]
+
+    # Needle supports regular 2D matmul.
+    if len(a.shape) == 2:
+        return a @ b
+
+    # Recursively split leading batch dimensions.
+    a_parts = ops.split(a, axis=0)
+    b_parts = ops.split(b, axis=0)
+
+    outputs = [
+        batched_matmul(a_parts[i], b_parts[i])
+        for i in range(a.shape[0])
+    ]
+
+    return ops.stack(outputs, axis=0)
 
 
 class T5Attention(nn.Module):
@@ -77,11 +101,12 @@ class T5Attention(nn.Module):
         source = hidden if key_value is None else key_value
         q, k, v = self.split(self.q(hidden)), self.split(self.k(source)), self.split(self.v(source))
         # T5 does NOT divide QK^T by sqrt(d_kv).
-        scores = q @ k.transpose((2, 3))
+        scores = batched_matmul(q, k.transpose((2, 3)))
         if position_bias is None:
             position_bias = self.position_bias(q.shape[2], k.shape[2])
             if mask is not None:
                 position_bias = position_bias.broadcast_to(scores.shape) + mask.broadcast_to(scores.shape)
         scores = scores + position_bias.broadcast_to(scores.shape)
         weights = self.dropout(softmax_last(scores))
-        return self.o(self.merge(weights @ v)), position_bias
+        context = batched_matmul(weights, v)
+        return self.o(self.merge(context)), position_bias
