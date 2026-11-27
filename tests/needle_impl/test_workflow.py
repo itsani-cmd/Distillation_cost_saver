@@ -18,3 +18,42 @@ def test_shifted_labels():
     assert decoder.tolist() == [[0, 10, 20, 1], [0, 30, 1, 0]]
     assert valid.tolist() == [[1, 1, 1, 0], [1, 1, 0, 0]]
     assert safe[0, 3] == 0
+
+
+def test_cross_attention_mask_shape():
+    import numpy as np
+    import needle as ndl
+    from needle_impl.transformer import attention_mask
+
+    batch_size = 2
+    source_length = 12
+    target_length = 5
+
+    source_valid = np.ones(
+        (batch_size, source_length),
+        dtype=bool
+    )
+
+    source_valid[0, -2:] = False
+
+    cross_mask = attention_mask(
+        source_valid,
+        query_length=target_length,
+        causal=False,
+        device=ndl.cpu(),
+        dtype="float32"
+    )
+
+    assert cross_mask.shape == (
+        batch_size, 1, target_length, source_length
+    )
+
+    mask_np = cross_mask.numpy()
+
+    # The final two source positions are padding for batch item 0.
+    assert np.all(mask_np[0, 0, :, -2:] < -1e8)
+
+    # No positions are masked for batch item 1.
+    assert np.all(mask_np[1] == 0)
+
+    print("PASS: Cross-attention mask shape and padding")

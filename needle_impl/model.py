@@ -66,11 +66,48 @@ class NeedleT5(nn.Module):
         source_valid = (source_ids != self.config.pad_token_id) if attention_mask is None else np.asarray(attention_mask, bool)
         target_valid = np.ones_like(target_ids, dtype=bool) if decoder_attention_mask is None else np.asarray(decoder_attention_mask, bool)
         # HF T5 without decoder_attention_mask uses causal masking only.
-        src_mask = attention_mask_fn(source_valid, source_ids.shape[1], False, self.device, self.dtype)
-        tgt_mask = attention_mask_fn(target_valid, target_ids.shape[1], True, self.device, self.dtype)
-        encoder_hidden = self.encoder(self.shared(input_ids), src_mask)
-        decoded = self.decoder(self.shared(decoder_input_ids), tgt_mask, encoder_hidden,
-                               src_mask, return_all_exits)
+        
+        # Encoder self-attention: source tokens attend to source tokens.
+        src_mask = attention_mask_fn(
+            source_valid,
+            source_ids.shape[1],
+            False,
+            self.device,
+            self.dtype
+        )
+
+        # Decoder self-attention: target tokens attend to previous target tokens.
+        tgt_mask = attention_mask_fn(
+            target_valid,
+            target_ids.shape[1],
+            True,
+            self.device,
+            self.dtype
+        )
+
+        # Decoder cross-attention: target tokens attend to source tokens.
+        cross_mask = attention_mask_fn(
+            source_valid,
+            target_ids.shape[1],
+            False,
+            self.device,
+            self.dtype
+        )
+
+        encoder_hidden = self.encoder(
+            self.shared(input_ids),
+            src_mask
+        )
+
+        decoded = self.decoder(
+            self.shared(decoder_input_ids),
+            tgt_mask,
+            encoder_hidden,
+            cross_mask,
+            return_all_exits
+        )
+
+        
         if return_all_exits:
             _, exit_states = decoded
             logits = [self.project(h) for h in exit_states]
