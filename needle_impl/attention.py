@@ -31,7 +31,7 @@ def relative_position_buckets(query_length, key_length, bidirectional=True,
 
 def softmax_last(x):
     """Numerically stable softmax over the last axis using Needle operations."""
-    z = ops.logsumexp(x, axes=(-1,))
+    z = ops.logsumexp(x, axes=(len(x.shape) - 1,))
     return ops.exp(x - z.reshape(x.shape[:-1] + (1,)).broadcast_to(x.shape))
 
 
